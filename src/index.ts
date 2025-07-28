@@ -143,7 +143,7 @@ const cleanupPeer = async (roomId: string, username: string) => {
 // --- SOCKET.IO EVENT HANDLING ---
 
 io.on('connection', (socket: CustomSocket) => {
-    console.log(`✅ New peer connected: ${socket.id}`);
+    console.log(` New peer connected: ${socket.id}`);
     
     // For transcription state per-socket
     let transcriptionIndex = 0;
@@ -162,21 +162,41 @@ io.on('connection', (socket: CustomSocket) => {
 
             const roomExists = await redisClient.exists(`room:${roomId}`);
             let router: Router;
-            let response: { rtpCapabilities?: RtpCapabilities, error?: string } = {};
+            const response: { 
+            rtpCapabilities?: RtpCapabilities, 
+            existingProducers?: { producerId: string, username: string }[],
+            error?: string 
+        } = {};
 
             if (isCreator) {
                 if (roomExists) return callback({ error: 'Room already exists.' });
                 
-                console.log(`🚪 Creating new room '${roomId}' for user '${username}'`);
+                console.log(` Creating new room '${roomId}' for user '${username}'`);
                 router = await getRouter(roomId);
                 await redisClient.set(`room:${roomId}`, JSON.stringify({ peers: [username] }));
             } else {
                 if (!roomExists) return callback({ error: 'Room not found.' });
-
-                console.log(`🤝 Adding user '${username}' to existing room '${roomId}'`);
+                router = await getRouter(roomId);
+                console.log(` Adding user '${username}' to existing room '${roomId}'`);
                 const roomDataString = await redisClient.get(`room:${roomId}`);
                 const roomData: RoomData = JSON.parse(roomDataString!);
-                router = await getRouter(roomId);
+
+
+                // ----------------------//
+                response.existingProducers = [];
+                for (const otherPeerUsername of roomData.peers) {
+                const otherPeerKey = `${roomId}:${otherPeerUsername}`;
+                const otherPeerProducers = producerInfo.get(otherPeerKey)?.producers;
+                if (otherPeerProducers) {
+                    otherPeerProducers.forEach(producer => {
+                        response.existingProducers!.push({
+                            producerId: producer.id,
+                            username: producer.appData.username as string,
+                        });
+                    });
+                }
+            }
+               
                 
                 roomData.peers.push(username);
                 await redisClient.set(`room:${roomId}`, JSON.stringify(roomData));
@@ -321,7 +341,7 @@ io.on('connection', (socket: CustomSocket) => {
             const router = await getRouter(socket.roomId);
             router.close();
             io.to(socket.roomId).emit('meeting-ended');
-            console.log(`🛑 Meeting ended and cleaned up for room: ${socket.roomId}`);
+            console.log(` Meeting ended and cleaned up for room: ${socket.roomId}`);
         }
     });
 
@@ -353,7 +373,7 @@ io.on('connection', (socket: CustomSocket) => {
     });
 
     socket.on('disconnect', async () => {
-        console.log(`🔌 Peer disconnected: ${socket.id} (${socket.username})`);
+        console.log(` Peer disconnected: ${socket.id} (${socket.username})`);
         if (!socket.roomId || !socket.username) return;
     
         await cleanupPeer(socket.roomId, socket.username);
@@ -384,15 +404,15 @@ export const startServer = async () => {
   try {
     redisClient.on('error', (err) => console.error('Redis Client Error', err));
     await redisClient.connect();
-    console.log('✅ Connected to Redis successfully.');
+    console.log('Connected to Redis successfully.');
 
     await createWorkers();
     
     server.listen(PORT, () => {
-      console.log(`🚀 Server is running on http://localhost:${PORT}`);
+      console.log(` Server is running on http://localhost:${PORT}`);
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    console.error(' Failed to start server:', error);
     process.exit(1);
   }
 };
