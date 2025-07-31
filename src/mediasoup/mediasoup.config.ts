@@ -34,12 +34,14 @@ const workers : Worker[] = []
 const routers = new Map<string, Router>()
 let nextWorkerIndex = 0;
 
+const use = cores / 4;
+
 // creating mediasoup worker
 
 export const createWorkers = async (): Promise<void> => {
-    console.log(`Creating ${cores} mediasoup workers ...`);
+    console.log(`Creating ${use} mediasoup workers ...`);
 
-    for(let i = 0; i < cores; i++) {
+    for(let i = 0; i < use; i++) {
         const worker = await mediasoup.createWorker(workerSettings)
 
         worker.on('died', () => {
