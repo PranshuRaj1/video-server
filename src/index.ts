@@ -6,6 +6,10 @@ import dotenv from 'dotenv';
 import { createClient, RedisClientType } from 'redis';
 import axios from 'axios';
 import FormData from 'form-data';
+import path from 'path';
+import fs from 'fs';
+import { startHlsRecording, stopHlsRecording } from './hls'; // Adjust path if needed
+
 
 // @ts-ignore
 import meteorRandom from 'meteor-random';
@@ -21,6 +25,8 @@ import {
   RtpParameters,
 } from 'mediasoup/node/lib/types';
 
+// hls 
+//import { startHlsRecording, stopHlsRecording, addProducerToHls, hlsState } from './hls/hls';
 dotenv.config();
 
 // --- TYPE DEFINITIONS ---
@@ -88,7 +94,7 @@ const redisClient: RedisClientType = createClient({
 
 const producerInfo = new Map<string, PeerProducerInfo>(); // Key: 'roomId:username'
 const consumerInfo = new Map<string, PeerConsumerInfo>(); // Key: 'roomId:username'
-
+const hlsActiveRooms = new Set<string>();
 // For audio transcription
 const transcriptionSessionId = meteorRandom.id();
 console.log('Transcription Session ID:', transcriptionSessionId);
@@ -98,6 +104,40 @@ console.log('Transcription Session ID:', transcriptionSessionId);
 
 app.use(cors(websockets_CORS));
 app.use(express.json());
+
+
+// --- HLS FILE SERVING ROUTE ---
+const HLS_DIR = path.resolve(process.cwd(), 'public', 'hls');
+app.get('/watch/:roomId/:file', (req, res) => {
+    const { roomId, file } = req.params;
+    console.log(`[Express Route] Received request for HLS file. Room: '${roomId}', File: '${file}'`);
+    
+    // IMPORTANT: In your hls.ts, you create a directory for the room inside HLS_DIR.
+    // So the actual path is HLS_DIR -> roomId -> file
+    const filePath = path.join(HLS_DIR, roomId, file);
+    console.log(`[Express Route] Searching for file at absolute path: ${filePath}`);
+
+    if (fs.existsSync(filePath)) {
+        console.log(`[Express Route] File found. Serving '${file}' with correct headers.`);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        if (file.endsWith('.m3u8')) {
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        } else if (file.endsWith('.ts')) {
+            res.setHeader('Content-Type', 'video/mp2t');
+        }
+        fs.createReadStream(filePath).pipe(res);
+    } else {
+        console.error(`[Express Route] ❌ File not found: ${filePath}`);
+        res.status(404).send(`File not found: ${file}`);
+    }
+});
+
+app.use('/watch', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    next();
+});
+
+app.use('/watch', express.static(HLS_DIR));
 
 
 // --- MEDIASOUP HELPER FUNCTIONS ---
@@ -264,10 +304,36 @@ io.on('connection', (socket: CustomSocket) => {
 
             const producer = await transport.produce({ kind, rtpParameters, appData });
             producerInfo.get(peerKey)!.producers.set(kind, producer);
+
+             // =========================================================
+            //  HLS INTEGRATION LOGIC
+            // =========================================================
+            // We'll start recording the FIRST VIDEO producer that joins the room.
+            if (producer.kind === 'video') {
+    if (!hlsActiveRooms.has(socket.roomId)) {
+        console.log(`[Socket.IO] First video producer (${producer.id}) joined room ${socket.roomId}. Attempting to start HLS recording.`);
+        try {
+            const router = await getRouter(socket.roomId);
+            await startHlsRecording(socket.roomId, producer, router);
+            hlsActiveRooms.add(socket.roomId);
+            console.log(`[Socket.IO] HLS recording started and flagged for room: ${socket.roomId}`);
+        } catch (hlsError) {
+            console.error(`[Socket.IO] ❌ Failed to start HLS recording for room ${socket.roomId}:`, hlsError);
+        }
+    } else {
+        console.log(`[Socket.IO] HLS recording is already active for room ${socket.roomId}. New video producer will not trigger a new recording.`);
+    }
+}
+            // =========================================================
       
             socket.to(socket.roomId).emit('new-producer', { username: socket.username, producerId: producer.id });
 
-            producer.on('transportclose', () => producer.close());
+            //producer.on('transportclose', () => producer.close());
+            
+            producer.on('@close', () => {
+                console.log(`Producer ${producer.id} closed.`);
+                producerInfo.get(peerKey)?.producers.delete(kind);
+            });
             callback({ id: producer.id });
         } catch(error) {
             console.error('Error in transport-produce:', error);
@@ -340,6 +406,12 @@ io.on('connection', (socket: CustomSocket) => {
             await redisClient.del(roomKey);
             const router = await getRouter(socket.roomId);
             router.close();
+
+            // --- HLS CLEANUP ON MEETING END ---
+            stopHlsRecording(socket.roomId);
+            hlsActiveRooms.delete(socket.roomId);
+
+            // --- END  ---
             io.to(socket.roomId).emit('meeting-ended');
             console.log(` Meeting ended and cleaned up for room: ${socket.roomId}`);
         }
@@ -388,10 +460,16 @@ io.on('connection', (socket: CustomSocket) => {
                 await redisClient.set(roomKey, JSON.stringify(roomData));
                 io.to(socket.roomId).emit('peer-left', { username: socket.username });
             } else {
+                // Room is now empty, clean everything up.
                 await redisClient.del(roomKey);
-                console.log(`🧹 Room ${socket.roomId} is empty and has been deleted.`);
-                const router = await getRouter(socket.roomId);
+                const router = await getRouter(socket.roomId!);
                 router.close();
+
+                // --- HLS CLEANUP ON LAST PEER LEAVING ---
+                stopHlsRecording(socket.roomId);
+                hlsActiveRooms.delete(socket.roomId);
+
+                console.log(`🧹 Room ${socket.roomId} is empty and has been deleted.`);
             }
         }
     });

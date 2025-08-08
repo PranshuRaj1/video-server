@@ -4,7 +4,7 @@ import {cpus} from 'os'
 import { Worker, Router } from 'mediasoup/node/lib/types'
 
 
-const cores = cpus().length
+const cores = 2
 
 const workerSettings: mediasoup.types.WorkerSettings = {
     logLevel: 'warn',
@@ -34,7 +34,7 @@ const workers : Worker[] = []
 const routers = new Map<string, Router>()
 let nextWorkerIndex = 0;
 
-const use = cores / 4;
+const use = 2; // using 2 workers for now, can be changed later
 
 // creating mediasoup worker
 
@@ -103,10 +103,3 @@ export const getRouter = async (roomId : string) : Promise<Router> => {
 
     return createRouter(roomId)
 }
-
-
-
-
-
-
-
