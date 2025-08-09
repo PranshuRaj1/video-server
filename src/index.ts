@@ -75,12 +75,8 @@ const io = new Server<any, any, any, CustomSocket>(server, { cors: websockets_CO
 
 // --- REDIS CLIENT SETUP ---
 
-const redisClient: RedisClientType = createClient({
-  password: process.env.REDIS_PASSWORD,
-  socket: {
-    host: process.env.REDIS_HOST,
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  },
+const redisClient = createClient({
+  url: process.env.REDIS_URL
 });
 
 
